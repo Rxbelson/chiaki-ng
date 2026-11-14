@@ -10,6 +10,7 @@
 #include <chiaki/video.h>
 
 #include <string.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <assert.h>
 #ifndef _WIN32
@@ -289,15 +290,27 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 
 	err = chiaki_mutex_lock(&stream_connection->feedback_sender_mutex);
 	assert(err == CHIAKI_ERR_SUCCESS);
-	err = chiaki_feedback_sender_init(&stream_connection->feedback_sender, &stream_connection->takion);
-	if(err != CHIAKI_ERR_SUCCESS)
+	// VIEW-ONLY MOD: set env var CHIAKI_VIEW_ONLY=1 to never send controller input,
+	// so the PC only mirrors the screen and the console keeps its own controller.
+	const char *view_only_env = getenv("CHIAKI_VIEW_ONLY");
+	bool view_only = view_only_env && view_only_env[0] && view_only_env[0] != '0';
+	if(view_only)
 	{
-		chiaki_mutex_unlock(&stream_connection->feedback_sender_mutex);
-		CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to start Feedback Sender");
-		goto disconnect;
+		CHIAKI_LOGI(stream_connection->log, "StreamConnection VIEW-ONLY mode: Feedback Sender disabled, no input will be sent");
+		stream_connection->feedback_sender_active = false;
 	}
-	stream_connection->feedback_sender_active = true;
-	chiaki_feedback_sender_set_controller_state(&stream_connection->feedback_sender, &session->controller_state);
+	else
+	{
+		err = chiaki_feedback_sender_init(&stream_connection->feedback_sender, &stream_connection->takion);
+		if(err != CHIAKI_ERR_SUCCESS)
+		{
+			chiaki_mutex_unlock(&stream_connection->feedback_sender_mutex);
+			CHIAKI_LOGE(stream_connection->log, "StreamConnection failed to start Feedback Sender");
+			goto disconnect;
+		}
+		stream_connection->feedback_sender_active = true;
+		chiaki_feedback_sender_set_controller_state(&stream_connection->feedback_sender, &session->controller_state);
+	}
 	chiaki_mutex_unlock(&stream_connection->feedback_sender_mutex);
 
 	stream_connection->state = STATE_IDLE;
@@ -326,8 +339,9 @@ CHIAKI_EXPORT ChiakiErrorCode chiaki_stream_connection_run(ChiakiStreamConnectio
 
 	err = chiaki_mutex_lock(&stream_connection->feedback_sender_mutex);
 	assert(err == CHIAKI_ERR_SUCCESS);
+	if(stream_connection->feedback_sender_active)
+		chiaki_feedback_sender_fini(&stream_connection->feedback_sender);
 	stream_connection->feedback_sender_active = false;
-	chiaki_feedback_sender_fini(&stream_connection->feedback_sender);
 	chiaki_mutex_unlock(&stream_connection->feedback_sender_mutex);
 
 	err = CHIAKI_ERR_SUCCESS;
